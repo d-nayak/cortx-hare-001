@@ -742,12 +742,6 @@ class ConsulUtil:
         else:
             pfid = create_process_fid(fidk)
         proc_node = self.get_process_node(pfid, kv_cache=kv_cache)
-        local_node = self.get_local_nodename()
-        # Every motr process requests the entire cluster status, thus if
-        # its the requesting process is the same as the processing one,
-        # we just reply itself as ONLINE instead of running self checks.
-        if proc_node == local_node:
-            return HaNoteStruct.M0_NC_ONLINE
         proc_status: ObjHealth = self.get_service_health(proc_node, pfid.key,
                                                          kv_cache=kv_cache)
         # Report ONLINE for hax and confd if they are already started.
@@ -1694,20 +1688,12 @@ class ConsulUtil:
             for item in node_data:
                 if item['ServiceID'] == str(svc_id):
                     pfid = create_process_fid(svc_id)
+                    LOG.debug('item.status %s', item['Status'])
+                    if item['Status'] in ('critical', 'warning'):
+                        return ObjHealth.OFFLINE
+
                     cns_status = self.get_process_status(pfid,
                                                          kv_cache=kv_cache)
-                    LOG.debug('item.status %s', item['Status'])
-                    if item['Status'] == 'critical':
-                        if (cns_status.proc_type in
-                            (m0HaProcessType.M0_CONF_HA_PROCESS_M0MKFS.name,
-                             'Unknown')):
-                            return ObjHealth.OFFLINE
-                        elif (cns_status.proc_status !=
-                              'M0_CONF_HA_PROCESS_STOPPED'):
-                            return ObjHealth.OFFLINE
-                        else:
-                            return ObjHealth.OFFLINE
-
                     svc_health = svc_to_motr_status_map[MotrConsulProcStatus(
                                          item['Status'],
                                          cns_status.proc_status)]
@@ -1719,22 +1705,6 @@ class ConsulUtil:
                         status = svc_health.motr_proc_status_local
                     else:
                         status = svc_health.motr_proc_status_remote
-                    if (status != ObjHealth.OK and
-                            cns_status.proc_type in (
-                            m0HaProcessType.M0_CONF_HA_PROCESS_M0MKFS.name,
-                            'Unknown')):
-                        status = ObjHealth.OFFLINE
-
-                    # This situation is not expected but we handle
-                    # the same. Hax may end up here if the process has stopped
-                    # already and its current status is also reported as
-                    # 'unknown' by Consul. Hax will do nothing in this case
-                    # and will report OFFLINE for that process.
-                    if (item['Status'] == 'warning' and
-                            cns_status.proc_status == 'Unknown' and
-                            status == ObjHealth.UNKNOWN):
-                        status = ObjHealth.OFFLINE
-
                     return status
         except (ConsulException, HTTPError, RequestException) as e:
             raise HAConsistencyException('Failed to communicate '
